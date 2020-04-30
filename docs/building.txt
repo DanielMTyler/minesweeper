@@ -1,0 +1,24 @@
+====================================
+ Copyright (C) 2020 Daniel M Tyler.
+ This file is part of Minesweeper.
+====================================
+
+Directory Structure:
+    assets: Raw Assets.
+    build/<buildname>: (Empty) Builds.
+    docs: Documentation.
+    release: Everything needed to run the game, minus the binaries.
+    src: Source Code.
+
+Dependencies:
+    SDL2 v2.0.10.
+
+Win64 Build Instructions:
+    NOTE: On Windows, CMake only supports clang/clang++ from MSYS2 and clang-cl from llvm.org.
+          See: https://stackoverflow.com/a/55610399 and https://gitlab.kitware.com/cmake/cmake/issues/18880.
+    1) Install MSYS2 x64 from https://www.msys2.org/ and update the package database with "pacman -Syu", then close the window.
+    2) Open MSYS2 MinGW64 Shell and update packages with "pacman -Su".
+    3) Install thirdparty dependencies and the toolchain to build them with "pacman -S base-devel mingw-w64-x86_64-toolchain git mingw-w64-x86_64-cmake mingw-w64-x86_64-qt5 mingw-w64-x86_64-clang mingw-w64-x86_64-SDL2" (Optionally: "git" if you need it and "mingw-w64-x86_64-qt5" for using cmake-gui).
+    4) cd <ELLIE_DIRECTORY>.
+    5) mkdir build/win64-release && cd build/win64-release && cmake ../../ -G"MSYS Makefiles" -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=/mingw64/bin/clang.exe -DCMAKE_CXX_COMPILER=/mingw64/bin/clang++.exe -DCMAKE_PREFIX_PATH=/mingw64/x86_64-w64-mingw32 && make.
+    6) Copy libgcc_s_seh-1.dll, libstdc++-6.dll, libwinpthread-1.dll, and SDL2.dll into the build folder.

@@ -1,0 +1,38 @@
+# ====================================
+#  Copyright (C) 2020 Daniel M Tyler.
+#  This file is part of Minesweeper.
+# ====================================
+
+# Files with LF line endings.
+.gitattributes text eol=lf
+.gitignore text eol=lf
+.gitkeep text eol=lf
+.gitmodules text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.cpp text eol=lf
+*.hpp text eol=lf
+
+# Files with CRLF line endings.
+*.bat text eol=crlf
+# Be nice to Windows users.
+*.txt text eol=crlf
+*.url text eol=crlf
+
+# Known binary files.
+*.7z binary
+*.dll binary
+*.exe binary
+*.gz binary
+*.tar binary
+*.tar.gz binary
+*.zip binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.png binary
+*.bmp binary
+*.ogg binary
+*.vorbis binary
+*.mp3 binary
+*.wav binary
