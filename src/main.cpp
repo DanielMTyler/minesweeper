@@ -62,6 +62,7 @@
 #include <sstream>
 #include <cstdlib> // srand, rand
 #include <ctime> // time
+#include <cmath> // floor
 
 
 #define KIBIBYTES(v) ((v) * 1024LL)
@@ -199,6 +200,14 @@ static SDL_Surface* g_guessSurface = nullptr;
 static SDL_Surface* g_pressedSurface = nullptr;
 static SDL_Surface* g_raisedSurface = nullptr;
 static SDL_Surface* g_explodedSurface = nullptr;
+static SDL_AudioSpec g_explodeAudioSpec;
+static uint8* g_explodeAudioBuf = nullptr;
+static uint32 g_explodeAudioLen = 0;
+static SDL_AudioSpec g_revealAudioSpec;
+static uint8* g_revealAudioBuf = nullptr;
+static uint32 g_revealAudioLen = 0;
+static SDL_AudioDeviceID g_audioDevice;
+
 
 struct Cell
 {
@@ -292,7 +301,7 @@ bool LoadImage(std::string file, SDL_Surface*& surface)
     if (!t)
     {
         ss.str("");
-        ss << "Failed to load image: " << f;
+        ss << "Failed to load image: " << f << SDL_GetError();
         LOG_FAIL(ss.str());
         return false;
     }
@@ -312,6 +321,50 @@ bool LoadImage(std::string file, SDL_Surface*& surface)
     }
     SDL_FreeSurface(t); t = nullptr;
     LOG_INFO("Optimized image.");
+    
+    return true;
+}
+
+bool LoadAudio(std::string file, SDL_AudioSpec* spec, uint8* buf, uint32* len)
+{
+    std::string f = g_dataPath + file;
+    const char* s = f.c_str();
+    if (SDL_LoadWAV(s, spec, &buf, len) == nullptr)
+    {
+        ss.str("");
+        ss << "Failed to load audio: " << f << SDL_GetError();
+        LOG_FAIL(ss.str());
+        return false;
+    }
+    ss.str("");
+    ss << "Loaded audio: " << f;
+    LOG_INFO(ss.str())
+    
+    return true;
+}
+
+bool PlayRevealAudio()
+{
+    if (SDL_QueueAudio(g_audioDevice, g_revealAudioBuf, g_revealAudioLen) != 0)
+    {
+        ss.str("");
+        ss << "Failed to play reveal audio: " << SDL_GetError();
+        LOG_FAIL(ss.str());
+        return false;
+    }
+    
+    return true;
+}
+
+bool PlayExplodeAudio()
+{
+    if (SDL_QueueAudio(g_audioDevice, g_explodeAudioBuf, g_explodeAudioLen) != 0)
+    {
+        ss.str("");
+        ss << "Failed to play reveal audio: " << SDL_GetError();
+        LOG_FAIL(ss.str());
+        return false;
+    }
     
     return true;
 }
@@ -370,6 +423,28 @@ bool AppInit()
     if (!LoadImage("mine.bmp", g_explodedSurface))
         return false;
     
+    if (!LoadAudio("explode.wav", &g_explodeAudioSpec, g_explodeAudioBuf, &g_explodeAudioLen))
+        return false;
+    if (!LoadAudio("reveal.wav", &g_revealAudioSpec, g_revealAudioBuf, &g_revealAudioLen))
+        return false;
+    
+    SDL_AudioSpec desiredAudio;
+    SDL_zero(desiredAudio);
+    desiredAudio.freq = 48000;
+    desiredAudio.format = AUDIO_F32;
+    desiredAudio.channels = 2;
+    desiredAudio.samples = 4096;
+    g_audioDevice = SDL_OpenAudioDevice(nullptr, 0, &desiredAudio, nullptr, SDL_AUDIO_ALLOW_ANY_CHANGE);
+    if (g_audioDevice == 0)
+    {
+        ss.str("");
+        ss << "Failed to open audio device: " << SDL_GetError();
+        LOG_FAIL(ss.str());
+        return false;
+    }
+    SDL_PauseAudioDevice(g_audioDevice, 0);
+    LOG_INFO("Opened audio device.");
+    
     InitCells();
     LOG_INFO("Initialized board.");
     
@@ -382,6 +457,13 @@ bool AppInit()
 void AppCleanup()
 {
     LOG_INFO("Cleaning up.");
+    
+    SDL_CloseAudioDevice(g_audioDevice);
+    
+    if (g_explodeAudioBuf)
+        SDL_FreeWAV(g_explodeAudioBuf); g_explodeAudioBuf = nullptr;
+    if (g_revealAudioBuf)
+        SDL_FreeWAV(g_revealAudioBuf); g_revealAudioBuf = nullptr;
     
     if (g_raisedSurface)
         SDL_FreeSurface(g_raisedSurface); g_raisedSurface = nullptr;
@@ -511,16 +593,149 @@ bool DrawCells()
     return true;
 }
 
+void MouseToRowCol(int32 x, int32 y, uint32& r, uint32& c)
+{
+    if (x < 0 || x > WINDOW_WIDTH || y < 0 || y > WINDOW_HEIGHT)
+    {
+        x = 0;
+        y = 0;
+    }
+    
+    r = std::floor(float(y) / float(IMAGE_HEIGHT));
+    c = std::floor(float(x) / float(IMAGE_WIDTH));
+}
+
+Cell* MouseToCell(int32 x, int32 y)
+{
+    uint32 r;
+    uint32 c;
+    MouseToRowCol(x, y, r, c);
+    return &g_cells[r][c];
+}
+
 int AppLoop()
 {
     bool quit = false;
     SDL_Event e;
+    bool lost = false;
     while (!quit)
     {
         while (SDL_PollEvent(&e) != 0)
         {
             if (e.type == SDL_QUIT || (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE))
                 quit = true;
+            
+            if (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP)
+            {
+                if (lost && e.type == SDL_MOUSEBUTTONUP)
+                {
+                    InitCells();
+                    lost = false;
+                    while (SDL_PollEvent(&e) != 0) {}
+                    break;
+                }
+                
+                uint32 r;
+                uint32 c;
+                MouseToRowCol(e.button.x, e.button.y, r, c);
+                Cell* cell = MouseToCell(e.button.x, e.button.y);
+                
+                if (e.type == SDL_MOUSEBUTTONUP)
+                {
+                    if (e.button.button == SDL_BUTTON_MIDDLE)
+                    {
+                        // Reveal
+                        if (cell->isRevealed)
+                        {
+                            bool mineNearby = false;
+                            Cell* l = (c > 0 ? &g_cells[r][c-1] : nullptr);
+                            Cell* tl = ((r > 0 && c > 0) ? &g_cells[r-1][c-1] : nullptr);
+                            Cell* t = (r > 0 ? &g_cells[r-1][c] : nullptr);
+                            Cell* tr = ((r > 0 && c < (NUM_COLS-1)) ? &g_cells[r-1][c+1] : nullptr);
+                            Cell* right = ((c < (NUM_COLS-1)) ? &g_cells[r][c+1] : nullptr);
+                            Cell* br = ((r < (NUM_ROWS-1) && c < (NUM_COLS-1)) ? &g_cells[r+1][c+1] : nullptr);
+                            Cell* b = ((r < (NUM_ROWS-1)) ? &g_cells[r+1][c] : nullptr);
+                            Cell* bl = ((r < (NUM_ROWS-1)) ? &g_cells[r+1][c-1] : nullptr);
+                            
+                            if (l && (l->isMine || l->isFlagged))
+                                mineNearby = true;
+                            if (tl && (tl->isMine || tl->isFlagged))
+                                mineNearby = true;
+                            if (t && (t->isMine || t->isFlagged))
+                                mineNearby = true;
+                            if (tr && (tr->isMine || tr->isFlagged))
+                                mineNearby = true;
+                            if (right && (right->isMine || right->isFlagged))
+                                mineNearby = true;
+                            if (br && (br->isMine || br->isFlagged))
+                                mineNearby = true;
+                            if (b && (b->isMine || b->isFlagged))
+                                mineNearby = true;
+                            if (bl && (bl->isMine || bl->isFlagged))
+                                mineNearby = true;
+                            
+                            if (!mineNearby)
+                            {
+                                if (l) l->isRevealed = true;
+                                if (tl) tl->isRevealed = true;
+                                if (t) t->isRevealed = true;
+                                if (tr) tr->isRevealed = true;
+                                if (right) right->isRevealed = true;
+                                if (br) br->isRevealed = true;
+                                if (b) b->isRevealed = true;
+                                if (bl) bl->isRevealed = true;
+                            }
+                        }
+                    }
+                    else if (e.button.button == SDL_BUTTON_LEFT)
+                    {
+                        // Activate cell
+                        if (!cell->isFlagged)
+                        {
+                            if (cell->isMine)
+                            {
+                                // Lose
+                                cell->isExploded = true;
+                                cell->isPressed = false;
+                                lost = true;
+                                while (SDL_PollEvent(&e) != 0) {}
+                                break;
+                            }
+                            else if (!cell->isRevealed)
+                            {
+                                // Not a mine!
+                                cell->isRevealed = true;
+                                cell->isGuessed = false;
+                                cell->isPressed = false;
+                                if (!PlayRevealAudio())
+                                {
+                                    quit = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT)
+                {
+                    // Flag or guess
+                    if (!cell->isRevealed)
+                    {
+                        if (cell->isFlagged)
+                        {
+                            cell->isFlagged = false; cell->isGuessed = true;
+                        }
+                        else if (cell->isGuessed)
+                        {
+                            cell->isFlagged = false; cell->isGuessed = false;
+                        }
+                        else
+                        {
+                            cell->isFlagged = true; cell->isGuessed = false;
+                        }
+                    }
+                }
+            }
         }
         
         if (!DrawCells())
